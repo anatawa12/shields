@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>JSDoc: Source: badge-maker/lib/xml.js</title>
+    <title>JSDoc: Source: services/crates/crates-base.js</title>
 
     <script src="scripts/prettify/prettify.js"> </script>
     <script src="scripts/prettify/lang-css.js"> </script>
@@ -17,7 +17,7 @@
 
 <div id="main">
 
-    <h1 class="page-title">Source: badge-maker/lib/xml.js</h1>
+    <h1 class="page-title">Source: services/crates/crates-base.js</h1>
 
     
 
@@ -26,102 +26,94 @@
     
     <section>
         <article>
-            <pre class="prettyprint source linenums"><code>/**
- * @module
- */
+            <pre class="prettyprint source linenums"><code>import Joi from 'joi'
+import { nonNegativeInteger } from '../validators.js'
+import { BaseJsonService, InvalidResponse } from '../index.js'
 
-'use strict'
+const versionSchema = Joi.object({
+  downloads: nonNegativeInteger,
+  // Crate size is not available for all versions.
+  crate_size: nonNegativeInteger.allow(null),
+  num: Joi.string().required(),
+  license: Joi.string().required().allow(null),
+  rust_version: Joi.string().allow(null),
+})
 
-function stripXmlWhitespace(xml) {
-  return xml.replace(/>\s+/g, '>').replace(/&lt;\s+/g, '&lt;').trim()
-}
+const crateResponseSchema = Joi.object({
+  crate: Joi.object({
+    downloads: nonNegativeInteger,
+    recent_downloads: nonNegativeInteger.allow(null),
+    max_version: Joi.string().required(),
+  }).required(),
+  versions: Joi.array().items(versionSchema).min(1).required(),
+}).required()
 
-function escapeXml(s) {
-  if (typeof s === 'number') {
-    return s
-  } else if (s === undefined || typeof s !== 'string') {
-    return undefined
-  } else {
-    return s
-      .replace(/&amp;/g, '&amp;amp;')
-      .replace(/&lt;/g, '&amp;lt;')
-      .replace(/>/g, '&amp;gt;')
-      .replace(/"/g, '&amp;quot;')
-      .replace(/'/g, '&amp;apos;')
-  }
-}
+const versionResponseSchema = Joi.object({
+  version: versionSchema.required(),
+}).required()
 
-/**
- * Representation of an XML element
- */
-class XmlElement {
-  /**
-   * Xml Element Constructor
-   *
-   * @param {object} attrs Refer to individual attrs
-   * @param {string} attrs.name
-   *    Name of the XML tag
-   * @param {Array.&lt;string|module:badge-maker/lib/xml~XmlElement>} [attrs.content=[]]
-   *    Array of objects to render inside the tag. content may contain a mix of
-   *    string and XmlElement objects. If content is `[]` or omitted the
-   *    element will be rendered as a self-closing element.
-   * @param {object} [attrs.attrs={}]
-   *    Object representing the tag's attributes as name/value pairs
-   */
-  constructor({ name, content = [], attrs = {} }) {
-    this.name = name
-    this.content = content
-    this.attrs = attrs
-  }
+const userStatsSchema = Joi.object({
+  total_downloads: nonNegativeInteger.required(),
+}).required()
+
+class BaseCratesService extends BaseJsonService {
+  static defaultBadgeData = { label: 'crates.io' }
 
   /**
-   * Render the XML element to a string, applying appropriate escaping
+   * Fetches data from the crates.io API.
    *
-   * @returns {string} String representation of the XML element
+   * @param {object} options - The options for the request
+   * @param {string} options.crate - The crate name.
+   * @param {string} [options.version] - The crate version number (optional).
+   * @returns {Promise&lt;object>} the JSON response from the API.
    */
-  render() {
-    const attrsStr = Object.entries(this.attrs)
-      .map(([k, v]) => ` ${k}="${escapeXml(v)}"`)
-      .join('')
-    if (this.content.length > 0) {
-      const content = this.content
-        .map(function (el) {
-          if (typeof el.render === 'function') {
-            return el.render()
-          } else {
-            return escapeXml(el)
-          }
-        })
-        .join(' ')
-      return stripXmlWhitespace(
-        `&lt;${this.name}${attrsStr}>${content}&lt;/${this.name}>`,
-      )
+  async fetch({ crate, version }) {
+    const url = version
+      ? `https://crates.io/api/v1/crates/${crate}/${version}`
+      : `https://crates.io/api/v1/crates/${crate}?include=versions,downloads`
+    const schema = version ? versionResponseSchema : crateResponseSchema
+    return this._requestJson({ schema, url })
+  }
+
+  static getLatestVersion(response) {
+    return response.crate.max_stable_version
+      ? response.crate.max_stable_version
+      : response.crate.max_version
+  }
+
+  static getVersionObj(response) {
+    if (response.crate) {
+      const version = this.getLatestVersion(response)
+      const versionObj = response.versions.find(v => v.num === version)
+      if (versionObj === undefined) {
+        throw new InvalidResponse({ prettyMessage: 'version not found' })
+      }
+      return versionObj
     }
-    return stripXmlWhitespace(`&lt;${this.name}${attrsStr}/>`)
+    return response.version
   }
 }
 
-/**
- * Convenience class. Sometimes it is useful to return an object that behaves
- * like an XmlElement but renders multiple XML tags (not wrapped in a &lt;g>).
- */
-class ElementList {
-  constructor({ content = [] }) {
-    this.content = content
-  }
+class BaseCratesUserService extends BaseJsonService {
+  static defaultBadgeData = { label: 'crates.io' }
 
-  render() {
-    return this.content.reduce(
-      (acc, el) =>
-        typeof el.render === 'function'
-          ? acc + el.render()
-          : acc + escapeXml(el),
-      '',
-    )
+  /**
+   * Fetches data from the crates.io API.
+   *
+   * @param {object} options - The options for the request
+   * @param {string} options.userId - The user ID.
+   * @returns {Promise&lt;object>} the JSON response from the API.
+   */
+  async fetch({ userId }) {
+    const url = `https://crates.io/api/v1/users/${userId}/stats`
+    return this._requestJson({ schema: userStatsSchema, url })
   }
 }
 
-module.exports = { escapeXml, stripXmlWhitespace, XmlElement, ElementList }
+const description =
+  '[Crates.io](https://crates.io/) is a package registry for Rust.'
+
+export { BaseCratesService, BaseCratesUserService, description }
 </code></pre>
         </article>
     </section>
